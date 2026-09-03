@@ -44,7 +44,7 @@ restarted for it.
 ## Testing
 
 ```bash
-./test.sh                # 68 tests, no network touched
+./test.sh                # 84 tests, no network touched
 ./test.sh -m live        # 5 extra tests against the real frankfurter.dev
 ```
 
@@ -57,6 +57,11 @@ that a 200 always carries a complete conversion whose result is exactly the
 amount times the rate, that `rate_date` is never later than the day asked
 about, and that an identical pair never reaches the network. That file is what
 found the rounding limit described at the bottom of this README.
+
+Coverage is 98% of `app/`, and `./test.sh --cov=app --cov-report=term-missing`
+reproduces it. The six uncovered lines are the uvicorn entrypoint and one
+catch-all branch that is commented as unreachable. Coverage is not a target
+here; it is how the dead error code described below was found.
 
 The `live` tests are excluded by default and exist to re-check the assumptions the fake is built on:
 that a closed day comes back dated to the previous publication, that an unknown
@@ -89,21 +94,29 @@ Every non-2xx response is the same shape:
 reworded. There is no partially-successful response: a 200 means the number is
 usable, and anything else means there is no number.
 
+This table is the whole set, and a test proves it: `app/errors.py` holds the
+codes and their statuses in one dictionary, an error with a code outside it
+cannot be constructed, and `tests/test_error_catalogue.py` fails if the two
+drift apart. Documenting an error the service cannot return is the same kind of
+defect as returning one it does not document.
+
 | `error` | Status | When |
 |---|---|---|
 | `missing_parameter` | 400 | `amount`, `from` or `to` was not sent. |
 | `invalid_amount` | 400 | Not a number, negative, not finite, or above the ceiling. |
 | `invalid_currency` | 400 | Not a three-letter code. |
-| `unsupported_currency` | 400 | The ECB series does not carry the pair. |
 | `invalid_date` | 400 | Not `YYYY-MM-DD`. |
+| `invalid_request` | 400 | A parameter failed validation in a way none of the above names. |
+| `unsupported_currency` | 400 | The ECB series does not carry the pair. |
 | `future_date` | 400 | Later than today in Frankfurt. |
 | `date_out_of_range` | 400 | Before 1999-01-04, where the series starts. |
-| `no_rate_available` | 404 | Nothing published on or before the asked date. |
+| `not_found` | 404 | No endpoint at that path. |
+| `method_not_allowed` | 405 | That method is not allowed on that path. |
 | `not_representable` | 422 | The exact result cannot be carried as a JSON number. |
+| `internal_error` | 500 | A bug, or a refusal with no better name. Never carries a number. |
 | `upstream_unavailable` | 502 | The rate source refused or could not be reached. |
 | `upstream_invalid_response` | 502 | It answered with something unusable. |
 | `upstream_timeout` | 504 | It did not answer in time. |
-| `internal_error` | 500 | A bug. Never carries a number. |
 
 ## Edge cases, and what happens
 

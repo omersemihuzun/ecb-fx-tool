@@ -130,6 +130,7 @@ def _register_routes(app: FastAPI) -> None:
         responses={
             400: {"model": ErrorResponse},
             404: {"model": ErrorResponse},
+            405: {"model": ErrorResponse},
             422: {"model": ErrorResponse},
             502: {"model": ErrorResponse},
             504: {"model": ErrorResponse},
@@ -174,22 +175,24 @@ def _register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(status_code=translated.status_code, content=translated.body())
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
-        codes = {404: "not_found", 405: "method_not_allowed"}
-        code = codes.get(exc.status_code, "request_rejected")
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"error": code, "message": str(exc.detail)},
-        )
+    async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        # Routing is the only thing that raises these here; the service never
+        # does. Anything else is a surprise and is treated as one.
+        if exc.status_code == 404:
+            error = errors.not_found(request.url.path)
+        elif exc.status_code == 405:
+            error = errors.method_not_allowed(request.method, request.url.path)
+        else:
+            logger.warning("unexpected HTTP exception: %s %s", exc.status_code, exc.detail)
+            error = errors.internal_error()
+        return JSONResponse(status_code=error.status_code, content=error.body())
 
     @app.exception_handler(Exception)
     async def _unexpected(_: Request, exc: Exception) -> JSONResponse:
         # Nothing gets to leave as a 200 with a made-up number in it.
         logger.exception("unhandled error", exc_info=exc)
-        return JSONResponse(
-            status_code=500,
-            content={"error": "internal_error", "message": "The request could not be completed."},
-        )
+        error = errors.internal_error()
+        return JSONResponse(status_code=error.status_code, content=error.body())
 
 
 def _translate_validation_error(exc: RequestValidationError) -> FxError:
@@ -209,9 +212,10 @@ def _translate_validation_error(exc: RequestValidationError) -> FxError:
         return errors.invalid_amount(f"'amount' must be a number, got {given!r}.")
     if field == "date":
         return errors.invalid_date(str(given))
-    if field in ("from", "to"):
-        return errors.invalid_currency(field, str(given))
-    return FxError("invalid_request", f"'{field}' is not valid: {first['msg']}")
+    # `from` and `to` are plain strings, so parsing them cannot fail; their
+    # shape is checked in the service, which is where invalid_currency comes
+    # from. This is the catch-all for a parameter added later.
+    return errors.invalid_request(field, first["msg"])
 
 
 def main() -> None:
