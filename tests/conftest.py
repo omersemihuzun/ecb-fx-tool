@@ -3,11 +3,16 @@
 The suite never touches the network. Every upstream response is produced by
 `FakeUpstream`, which is wired into httpx through a MockTransport, so the
 service under test is the real service and only the socket is fake.
+
+`build_harness` is the single constructor; the fixtures below are thin views
+onto it, and the property tests call it directly because each generated example
+needs its own cache.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Callable
@@ -23,6 +28,8 @@ from app.main import create_app
 # Fixed "today" so date behaviour is deterministic. A Thursday; the ECB
 # publishes on it.
 TODAY = date(2026, 9, 3)
+
+Responder = Callable[[httpx.Request], httpx.Response]
 
 
 def rates_body(rate_date: str, rates: dict[str, float], base: str = "EUR") -> dict:
@@ -45,7 +52,7 @@ class FakeUpstream:
 
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
-        self.responder: Callable[[httpx.Request], httpx.Response] = self._default
+        self.responder: Responder = self._default
 
     @property
     def call_count(self) -> int:
@@ -76,41 +83,78 @@ class FakeUpstream:
         return rates_response(rate_date, {request.url.params["symbols"]: 47.1234})
 
 
-@pytest.fixture
-def upstream() -> FakeUpstream:
-    return FakeUpstream()
-
-
-@pytest.fixture
-def settings() -> Settings:
-    return Settings(upstream_base="https://upstream.test", latest_cache_ttl_seconds=600.0)
-
-
-@pytest.fixture
-def clock() -> Callable[[], float]:
+class Clock:
     """A monotonic clock the tests advance by hand."""
 
-    class Clock:
-        now = 0.0
+    def __init__(self) -> None:
+        self.now = 0.0
 
-        def __call__(self) -> float:
-            return self.now
+    def __call__(self) -> float:
+        return self.now
 
-        def advance(self, seconds: float) -> None:
-            self.now += seconds
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
-    return Clock()
+
+@dataclass
+class Harness:
+    upstream: FakeUpstream
+    settings: Settings
+    clock: Clock
+    service: FxService
+    client: TestClient
+
+
+def build_harness(
+    responder: Responder | None = None,
+    settings: Settings | None = None,
+    today: date = TODAY,
+) -> Harness:
+    upstream = FakeUpstream()
+    if responder is not None:
+        upstream.responder = responder
+    settings = settings or Settings(
+        upstream_base="https://upstream.test", latest_cache_ttl_seconds=600.0
+    )
+    clock = Clock()
+    service = FxService(
+        httpx.AsyncClient(transport=httpx.MockTransport(upstream.handle)),
+        settings,
+        today=lambda: today,
+        monotonic=clock,
+    )
+    client = TestClient(create_app(settings=settings, service=service))
+    return Harness(upstream, settings, clock, service, client)
 
 
 @pytest.fixture
-def service(upstream: FakeUpstream, settings: Settings, clock) -> FxService:
-    client = httpx.AsyncClient(transport=httpx.MockTransport(upstream.handle))
-    return FxService(client, settings, today=lambda: TODAY, monotonic=clock)
+def harness() -> Harness:
+    return build_harness()
 
 
 @pytest.fixture
-def client(settings: Settings, service: FxService) -> TestClient:
-    return TestClient(create_app(settings=settings, service=service))
+def upstream(harness: Harness) -> FakeUpstream:
+    return harness.upstream
+
+
+@pytest.fixture
+def settings(harness: Harness) -> Settings:
+    return harness.settings
+
+
+@pytest.fixture
+def clock(harness: Harness) -> Clock:
+    return harness.clock
+
+
+@pytest.fixture
+def service(harness: Harness) -> FxService:
+    return harness.service
+
+
+@pytest.fixture
+def client(harness: Harness) -> TestClient:
+    return harness.client
 
 
 def body_of(response: httpx.Response) -> dict:
