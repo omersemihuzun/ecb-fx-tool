@@ -44,13 +44,21 @@ restarted for it.
 ## Testing
 
 ```bash
-./test.sh                # 60 tests, no network touched
+./test.sh                # 68 tests, no network touched
 ./test.sh -m live        # 5 extra tests against the real frankfurter.dev
 ```
 
 The default run replaces the HTTP transport with a fake, so the service under
-test is the real service and only the socket is simulated. The `live` tests are
-excluded by default and exist to re-check the assumptions the fake is built on:
+test is the real service and only the socket is simulated.
+
+Most of those are examples. Three are not: `tests/test_properties.py` generates
+requests and upstream behaviour and asserts the rules rather than the cases —
+that a 200 always carries a complete conversion whose result is exactly the
+amount times the rate, that `rate_date` is never later than the day asked
+about, and that an identical pair never reaches the network. That file is what
+found the rounding limit described at the bottom of this README.
+
+The `live` tests are excluded by default and exist to re-check the assumptions the fake is built on:
 that a closed day comes back dated to the previous publication, that an unknown
 currency is a 404, and that an identical pair is a 422. If frankfurter.dev ever
 changes one of those, the live run is what tells you before a customer does.
@@ -91,6 +99,7 @@ usable, and anything else means there is no number.
 | `future_date` | 400 | Later than today in Frankfurt. |
 | `date_out_of_range` | 400 | Before 1999-01-04, where the series starts. |
 | `no_rate_available` | 404 | Nothing published on or before the asked date. |
+| `not_representable` | 422 | The exact result cannot be carried as a JSON number. |
 | `upstream_unavailable` | 502 | The rate source refused or could not be reached. |
 | `upstream_invalid_response` | 502 | It answered with something unusable. |
 | `upstream_timeout` | 504 | It did not answer in time. |
@@ -148,7 +157,7 @@ app/config.py    environment, read once at startup
 app/errors.py    the one error shape, and the codes
 app/fx.py        validation, the upstream call, the cache
 app/main.py      HTTP only: parse in, one shape out
-tests/           60 offline tests, 5 live ones
+tests/           offline tests, plus 5 live ones behind `-m live`
 tool.py          the Part B subject. Not part of the service; see REVIEW.md.
 ```
 
@@ -159,8 +168,15 @@ is testable without an HTTP server.
 
 Money arithmetic is `Decimal` end to end, including the parse of the upstream
 body, and becomes a float only in the last function before serialisation. JSON
-has no decimal type, so `11988.40` goes over the wire as `11988.4`; the scale is
-lost in transport but never in the arithmetic.
+has no decimal type, so `11988.40` goes over the wire as `11988.4`. The scale is
+lost in transport, never in the arithmetic.
+
+Above roughly ninety trillion a float can no longer hold a value to the cent:
+`123456789012.34` at a rate of `987.6543` is exactly `121932628532230.35` and
+serialises as `...30.34`. Rather than send a number that is a cent wrong, the
+service checks that the value survives the round trip and refuses with
+`not_representable` when it does not. Every conversion a real customer makes is
+many orders of magnitude below that line.
 
 `result` is rounded to two decimal places for every currency. That is right for
 EUR and TRY and wrong for JPY, which has no minor unit. It is recorded in

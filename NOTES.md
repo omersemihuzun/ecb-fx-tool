@@ -38,6 +38,19 @@ real status code, including for FastAPI's own validation failures — a caller
 should not have to parse two formats depending on how far into the handler the
 request got. Nothing that fails produces a number.
 
+**A number that will not survive JSON is refused rather than shortened.** The
+example tests all pass with the rate never rounded and the arithmetic exact, so
+I wrote three property tests to state the rule instead of the cases: a 200
+always carries a result equal to the amount times the rate, quantised to the
+cent. Widening the generated amounts to the configured ceiling broke it. A JSON
+float holds about fifteen significant digits, and 123456789012.34 at a rate of
+987.6543 is exactly 121932628532230.35, which serialises as `...30.34`. One
+cent, in my own code, in the one thing this service exists not to do. Rather
+than lower the ceiling and hope, the last function before serialisation now
+checks that the value round-trips and returns `not_representable` when it does
+not. No real conversion comes close to that line, which is exactly why it would
+have shipped.
+
 **The cache key is `(from, to, date)`,** never just the pair. A rate for a
 closed day is final and is kept without expiry; anything touching today expires
 after ten minutes, because the 16:00 CET fixing may not have happened yet.
@@ -56,9 +69,8 @@ Concurrent identical calls share one upstream request.
   code — the codes exist mostly so that this is possible later.
 - Serve `rate` and `result` as strings as well, under different keys. JSON
   numbers cannot carry `11988.40`; the trailing zero is lost in transport even
-  though the arithmetic never loses it.
-- A test that the OpenAPI schema still matches the documented response, since
-  an agent reads that schema to decide how to call the tool.
+  though the arithmetic never loses it. That would also retire
+  `not_representable` rather than merely making it honest.
 
 ## AI tools
 
