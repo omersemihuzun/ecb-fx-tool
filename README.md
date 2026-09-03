@@ -34,6 +34,7 @@ PORT=9000 ./run.sh
 
 `run.sh` creates `.venv` on first run and installs `requirements.txt` into it.
 Python 3.11 or newer. Nothing else is needed — no database, no keys, no Docker.
+On Windows both scripts run under Git Bash; PowerShell cannot execute them.
 
 Interactive schema at `/docs`, machine-readable at `/openapi.json`. `/health`
 is a liveness probe and deliberately says nothing about the upstream: if
