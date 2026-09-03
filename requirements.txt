@@ -8,3 +8,4 @@ tzdata>=2024.1          # zoneinfo has no system database on Windows or slim ima
 # Tests
 pytest>=8.0,<9.0
 pytest-asyncio>=0.23,<2.0
+hypothesis>=6.100,<7.0
