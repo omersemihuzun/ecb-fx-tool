@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Runs your tests. They must pass with no network at all: we run this with
-# FX_UPSTREAM_BASE pointing at a closed port.
+# Run the test suite. No network access is required or attempted.
 set -euo pipefail
-echo "test.sh is not implemented yet" >&2
-exit 1
+cd "$(dirname "$0")"
+
+source ./scripts/venv.sh
+ensure_venv
+
+exec "$VENV_PY" -m pytest "$@"
