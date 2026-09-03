@@ -43,23 +43,36 @@ class ErrorResponse(BaseModel):
     message: str
 
 
-def _number(value: Decimal) -> int | float:
-    """Render a Decimal as a JSON number.
+def _number(field: str, value: Decimal) -> int | float:
+    """Render a Decimal as a JSON number, or refuse.
 
     All arithmetic upstream of this is exact. JSON has no decimal type, so the
     value becomes a float here and nowhere earlier. Integral values are emitted
     as integers so `amount=250` comes back as 250.
+
+    A float carries about fifteen significant digits, so past roughly ninety
+    trillion it can no longer hold a value to the cent: 121932628532230.35
+    serialises as ...30.34. That is a wrong number, and this service would
+    rather send none, so anything that does not survive the round trip is
+    refused instead of quietly shortened.
     """
-    return int(value) if value == value.to_integral_value() else float(value)
+    if value == value.to_integral_value():
+        as_integer = int(value)
+        if abs(as_integer) < 2**53:
+            return as_integer
+    as_float = float(value)
+    if Decimal(repr(as_float)) != value:
+        raise errors.not_representable(field, value)
+    return as_float
 
 
 def _body(conversion: Conversion) -> dict[str, Any]:
     return {
-        "amount": _number(conversion.amount),
+        "amount": _number("amount", conversion.amount),
         "from": conversion.base,
         "to": conversion.target,
-        "rate": _number(conversion.rate),
-        "result": _number(conversion.result),
+        "rate": _number("rate", conversion.rate),
+        "result": _number("result", conversion.result),
         "rate_date": conversion.rate_date.isoformat(),
         "asked_date": conversion.asked_date.isoformat(),
         "source": conversion.source,
@@ -117,6 +130,7 @@ def _register_routes(app: FastAPI) -> None:
         responses={
             400: {"model": ErrorResponse},
             404: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
             502: {"model": ErrorResponse},
             504: {"model": ErrorResponse},
         },

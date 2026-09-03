@@ -184,6 +184,26 @@ def test_zero_is_a_legitimate_amount(client, upstream: FakeUpstream):
     assert body_of(response)["result"] == 0
 
 
+def test_a_result_json_cannot_carry_to_the_cent_is_refused(client, upstream: FakeUpstream):
+    # 123456789012.34 * 987.6543 is exactly 121932628532230.35, which a JSON
+    # float rounds to ...30.34. Found by the property test in test_properties.
+    upstream.always(raw_response('{"date":"2026-09-02","rates":{"TRY":987.6543}}'))
+
+    response = convert(client, amount="123456789012.34", **{"from": "EUR"}, to="TRY")
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "not_representable"
+    assert "result" not in response.json()
+
+
+def test_a_result_that_does_fit_is_served_to_the_cent(client, upstream: FakeUpstream):
+    upstream.always(raw_response('{"date":"2026-09-02","rates":{"TRY":987.6543}}'))
+
+    response = convert(client, amount="12345.67", **{"from": "EUR"}, to="TRY")
+
+    assert body_of(response)["result"] == Decimal("12193254.06")
+
+
 def test_an_amount_above_the_ceiling_is_refused(client, upstream: FakeUpstream):
     response = convert(client, amount="1000000000001", **{"from": "EUR"}, to="TRY")
 

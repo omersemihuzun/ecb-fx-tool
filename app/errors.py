@@ -14,6 +14,7 @@ has a number it can use; anything else is a refusal to answer.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 
 class FxError(Exception):
@@ -74,6 +75,15 @@ def no_rate_available(base: str, target: str, asked: date) -> FxError:
         "no_rate_available",
         f"No published {base}/{target} rate on or before {asked.isoformat()}.",
         status_code=404,
+    )
+
+
+def not_representable(field: str, value: Decimal) -> FxError:
+    return FxError(
+        "not_representable",
+        f"The exact value of '{field}' ({value:f}) cannot be carried as a JSON number. "
+        f"Convert a smaller amount.",
+        status_code=422,
     )
 
 
