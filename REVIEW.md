@@ -44,6 +44,16 @@ the rate came from, so the stale number arrives wearing today's date.
 upstream request, and the second response carries the 2020 rate of 6.6 with
 `"rate_date": "2026-09-03"`.
 
+Note that this finding and finding 2 have to be fixed in the same change, in
+that order. Because `date` never binds, `on` is always `None`, so every request
+is a `/latest` request and the cache holds exactly one entry per pair — the
+cross-date corruption above is reachable only through the undocumented `on=`
+parameter. Add the aliases on their own and the date starts binding, which
+switches that corruption on for every caller. What is already costing customers
+today is the missing expiry: one entry, taken once, served for the life of the
+process, so a restart is currently the only way the service ever sees a new
+rate.
+
 ## 4. The rate is rounded to two decimals before it is used
 
 `rate = round(rate, 2)` runs before the multiplication. Today's EUR/TRY of
@@ -100,6 +110,10 @@ instead of swallowing, return `{"error", "message"}` under a non-2xx status,
 and every remaining bug in this file stops being silent. It is a small change,
 it needs no new dependency, and the rest can be fixed on Monday with the logs
 it produces over the weekend.
+
+It is also the safest one to ship alone. Findings 2 and 3 are coupled and get
+worse if separated, and finding 5 needs a response field the callers do not
+read yet. Finding 1 changes only what happens on a path that is already broken.
 
 ## Things that look suspicious but are fine
 
