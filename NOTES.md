@@ -34,6 +34,15 @@ function before serialisation now checks the round trip and returns
 `not_representable` instead. No real conversion comes near that line, which is
 exactly why it would have shipped.
 
+**Three modules below the HTTP layer, not one.** `fx.py` holds the rules,
+`upstream.py` holds everything that knows frankfurter.dev exists, `cache.py`
+holds "do not ask that again" and nothing about rates. I did not start there.
+The split came after the tests began reaching into `service._client` to install
+a fake and `service._cache` to assert a bound — a test reaching past a public
+surface is the object telling you it has more than one job. `fx.py` went from
+163 statements to 80, needs no server, no socket and no clock, and is now the
+only file you have to read to know what the service will and will not claim.
+
 **A documented error the service cannot return is a defect too.** Coverage found
 `no_rate_available` in the README, and raised nowhere. That is the same fault
 REVIEW.md charges `tool.py` with. Codes and statuses now live in one dictionary,
@@ -45,20 +54,18 @@ README table in both directions.
 - Validate currencies against `/v1/currencies`, cached. Today an unsupported
   code and a broken upstream both arrive as a 4xx and I infer which.
 - Per-currency minor units, so JPY does not get two decimal places.
-- One retry with jitter, and a circuit breaker, so an outage costs one slow
+- A retry with jitter and a circuit breaker, so an outage costs one slow
   request rather than one per caller.
 - Request logging with a correlation id and a counter per error code.
-- Serve `rate` and `result` as strings as well. JSON numbers cannot carry
-  `11988.40`, and that would retire `not_representable` rather than make it
-  honest.
+- Serve `rate` and `result` as strings too. That would retire
+  `not_representable` rather than merely make it honest.
 
 ## AI tools
 
 Claude Code, the way I normally work: I set the shape of the modules and the
-decisions above, had it write the mechanical parts — the cache, the error
-factories, the parametrised test bodies — and read every line. I ran the tests
-myself rather than believing a summary of them, and the two findings above came
-out of tools I chose to point at my own work.
+decisions above, had it write the mechanical parts, and read every line. I ran
+the tests myself rather than believing a summary of them, and both findings
+above came out of tools I chose to point at my own work.
 
 What I did not delegate is the ranking in REVIEW.md. Finding the defects in
 `tool.py` is mostly reading. Deciding that the silent 200 is the one to fix
@@ -76,8 +83,6 @@ message depended on it. `/v1/2030-01-01` returns `404 {"message": "not found"}`.
 The guard survived; the reasoning did not. A 404 is also what an unsupported
 currency returns, so without the local check a future date reaches the caller as
 `unsupported_currency` — the right refusal for the wrong reason, which matters
-when an agent is deciding whether to retry with a different currency. I rewrote
-the comment and turned the probe into `tests/test_live.py`, deselected from
-`./test.sh`, which asserts the upstream behaviours the offline fake is built on.
-Next time one of those assumptions is wrong it will be a red test rather than a
-comment nobody re-read.
+when an agent is deciding whether to retry with another currency. I rewrote the
+comment and turned the probe into `tests/test_live.py`. Next time one of those
+assumptions is wrong it will be a red test, not a comment nobody re-read.

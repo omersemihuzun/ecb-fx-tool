@@ -33,7 +33,7 @@ PORT=9000 ./run.sh
 ```
 
 `run.sh` creates `.venv` on first run and installs `requirements.txt` into it.
-Python 3.11 or newer. Nothing else is needed — no database, no keys, no Docker.
+Python 3.11 or newer. Nothing else is needed: no database, no keys, no Docker.
 On Windows both scripts run under Git Bash; PowerShell cannot execute them.
 
 Interactive schema at `/docs`, machine-readable at `/openapi.json`. `/health`
@@ -41,32 +41,76 @@ is a liveness probe and deliberately says nothing about the upstream: if
 frankfurter.dev is down, this process is still healthy and should not be
 restarted for it.
 
+## Design
+
+Six modules, and the dependencies only point one way.
+
+```
+main.py       HTTP. Parse in, one shape out. Holds no rules.
+  fx.py       the rules. No HTTP, no JSON, no expiry arithmetic.
+    upstream.py   everything that knows frankfurter.dev exists
+    cache.py      "do not ask that again", and nothing about rates
+  errors.py   the one error shape, and the catalogue of codes
+  config.py   the environment, read once at startup
+```
+
+`fx.py` is the file worth reading. It holds every decision about whether an
+answer can be trusted — what a usable amount is, which dates are answerable,
+what an identical pair means, and the one check a rate source is not allowed to
+fail — and it holds nothing else. That is why it is eighty statements, and why
+its tests need no server, no socket and no clock.
+
+Its two dependencies exist because they are the two things that would otherwise
+smear across it.
+
+**`upstream.py`** is where the provider lives. The URL scheme, the meaning of
+its status codes, and the shape of its JSON stop there; what comes out is a
+rate and the day it was published for. `fx.py` depends on the `RateSource`
+protocol rather than on the class, so swapping providers means writing another
+class with a `quote` method and changing one line in `main.py`.
+
+**`cache.py`** knows nothing about currencies. It has one method,
+`get_or_fetch`, behind which sit an expiry, a size bound, and the coalescing
+that makes five simultaneous identical calls cost the upstream one request.
+Those arrive as one problem — "do not ask that again" — so they are solved in
+one place, and tested with a counter for a fetch function rather than through a
+conversion.
+
+The seam is not decoration. Before it, the tests reached into `service._client`
+to install a fake and into `service._cache` to assert a bound. A test reaching
+past a public surface is the object saying out loud that it has more than one
+job. No test touches a private attribute now.
+
 ## Testing
 
 ```bash
-./test.sh                # 84 tests, no network touched
-./test.sh -m live        # 5 extra tests against the real frankfurter.dev
+./test.sh                # 90 tests, no network touched
+./test.sh -m live        # 5 more, against the real frankfurter.dev
 ```
 
-The default run replaces the HTTP transport with a fake, so the service under
-test is the real service and only the socket is simulated.
+Two fakes, for two different jobs. Most tests replace only the HTTP transport,
+so `upstream.py` runs for real and only the socket is simulated. Tests about
+coordination — five callers sharing one fetch, a caller disconnecting — replace
+the whole `RateSource`, because they are not about HTTP and the fixture should
+say so.
 
-Most of those are examples. Three are not: `tests/test_properties.py` generates
-requests and upstream behaviour and asserts the rules rather than the cases —
-that a 200 always carries a complete conversion whose result is exactly the
-amount times the rate, that `rate_date` is never later than the day asked
+Most of the suite is examples. Three cases are not: `tests/test_properties.py`
+generates requests and upstream behaviour and asserts the rules rather than the
+cases — that a 200 always carries a complete conversion whose result is exactly
+the amount times the rate, that `rate_date` is never later than the day asked
 about, and that an identical pair never reaches the network. That file is what
-found the rounding limit described at the bottom of this README.
+found the rounding limit described at the end of this README.
 
-Coverage is 98% of `app/`, and `./test.sh --cov=app --cov-report=term-missing`
-reproduces it. The six uncovered lines are the uvicorn entrypoint and one
-catch-all branch that is commented as unreachable. Coverage is not a target
-here; it is how the dead error code described below was found.
+The `live` tests are excluded by default. They exist to re-check the assumptions
+the offline fake is built on: that a closed day comes back dated to the previous
+publication, that an unknown currency is a 404, and that an identical pair is a
+422. If frankfurter.dev changes one of those, the live run is what says so
+before a customer does.
 
-The `live` tests are excluded by default and exist to re-check the assumptions the fake is built on:
-that a closed day comes back dated to the previous publication, that an unknown
-currency is a 404, and that an identical pair is a 422. If frankfurter.dev ever
-changes one of those, the live run is what tells you before a customer does.
+Coverage is 99% of `app/`, reproducible with
+`./test.sh --cov=app --cov-report=term-missing`. The six uncovered lines are the
+uvicorn entrypoint and one branch commented as unreachable. Coverage is not a
+target here; it is how the dead error code mentioned below was found.
 
 ## Configuration
 
@@ -87,18 +131,18 @@ process there rather than turning into a strange answer under load.
 Every non-2xx response is the same shape:
 
 ```json
-{ "error": "future_date", "message": "No rate exists for 2030-01-01; the ECB has published up to 2026-09-03." }
+{ "error": "future_date", "message": "No rate exists for 2030-01-01; the ECB has published up to 2026-09-04." }
 ```
 
 `error` is stable and safe to branch on. `message` is for a human and may be
 reworded. There is no partially-successful response: a 200 means the number is
 usable, and anything else means there is no number.
 
-This table is the whole set, and a test proves it: `app/errors.py` holds the
+This table is the whole set, and a test proves it. `app/errors.py` holds the
 codes and their statuses in one dictionary, an error with a code outside it
 cannot be constructed, and `tests/test_error_catalogue.py` fails if the two
-drift apart. Documenting an error the service cannot return is the same kind of
-defect as returning one it does not document.
+drift apart in either direction. Documenting an error the service cannot return
+is the same kind of defect as returning one it does not document.
 
 | `error` | Status | When |
 |---|---|---|
@@ -125,7 +169,7 @@ morning of any day before the 16:00 CET fixing. The most recent earlier rate is
 returned, and `rate_date` says which day it is really from while `asked_date`
 keeps the question. `rate_date == asked_date` is the caller's signal that the
 rate was published on the day asked about; when they differ, the rate is
-carried forward. Refusing outright would be honest but useless — Saturday is a
+carried forward. Refusing outright would be honest but useless: Saturday is a
 real question with a real answer, as long as nobody pretends the answer is
 Saturday's.
 
@@ -157,34 +201,20 @@ the day asked about are all treated as unusable rather than parsed optimisticall
 rather than signed-through, because a negative amount reaching a conversion tool
 is far more likely to be a bug upstream than a refund.
 
-**The same question twice.** Answered from cache. Rates for a closed day never
-change and are kept without expiry; anything touching today expires after
-`FX_CACHE_TTL_SECONDS`. The key includes the date, so a rate fetched for one
-day can never be served for another. Concurrent identical requests share a
-single upstream call rather than each making their own.
+**The same question twice.** Answered from cache. Rates for a day that is over
+never change and are kept without expiry; anything touching today expires after
+`FX_CACHE_TTL_SECONDS`. The key includes the date, so a rate fetched for one day
+can never be served for another. Concurrent identical requests share a single
+upstream call rather than each making their own.
 
-## Layout
-
-```
-app/config.py    environment, read once at startup
-app/errors.py    the one error shape, and the codes
-app/fx.py        validation, the upstream call, the cache
-app/main.py      HTTP only: parse in, one shape out
-tests/           offline tests, plus 5 live ones behind `-m live`
-tool.py          the Part B subject. Not part of the service; see REVIEW.md.
-```
-
-Everything that decides whether an answer is trustworthy is in `app/fx.py` and
-is testable without an HTTP server.
-
-## Two things worth knowing
+## Known limits
 
 Money arithmetic is `Decimal` end to end, including the parse of the upstream
 body, and becomes a float only in the last function before serialisation. JSON
 has no decimal type, so `11988.40` goes over the wire as `11988.4`. The scale is
 lost in transport, never in the arithmetic.
 
-Above roughly ninety trillion a float can no longer hold a value to the cent:
+Above roughly ninety trillion a float can no longer hold a value to the cent.
 `123456789012.34` at a rate of `987.6543` is exactly `121932628532230.35` and
 serialises as `...30.34`. Rather than send a number that is a cent wrong, the
 service checks that the value survives the round trip and refuses with
@@ -192,5 +222,8 @@ service checks that the value survives the round trip and refuses with
 many orders of magnitude below that line.
 
 `result` is rounded to two decimal places for every currency. That is right for
-EUR and TRY and wrong for JPY, which has no minor unit. It is recorded in
-NOTES.md rather than fixed.
+EUR and TRY and wrong for JPY, which has no minor unit. It is written down in
+NOTES.md rather than half-fixed.
+
+`tool.py` in the repository root is the subject of Part B. It is not part of the
+service; see REVIEW.md.
