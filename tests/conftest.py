@@ -1,12 +1,17 @@
 """Test fixtures.
 
-The suite never touches the network. Every upstream response is produced by
-`FakeUpstream`, which is wired into httpx through a MockTransport, so the
-service under test is the real service and only the socket is fake.
+The suite never touches the network. Two fakes, used for different jobs:
 
-`build_harness` is the single constructor; the fixtures below are thin views
-onto it, and the property tests call it directly because each generated example
-needs its own cache.
+`FakeUpstream` replaces the HTTP transport, so `FrankfurterRates` runs for real
+and only the socket is simulated. That is what most tests want.
+
+`FakeRates` replaces the whole rate source. Tests about coordination — one
+upstream call for five simultaneous callers, a caller disconnecting — are not
+about HTTP, and saying so in the fixture is cheaper than saying it in comments.
+
+`build_harness` is the single constructor. The fixtures are views onto it, and
+the property tests call it directly because each generated example needs its
+own cache.
 """
 
 from __future__ import annotations
@@ -15,7 +20,7 @@ import json
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Callable
+from typing import Awaitable, Callable
 
 import httpx
 import pytest
@@ -24,6 +29,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.fx import FxService
 from app.main import create_app
+from app.upstream import FrankfurterRates, Quote, RateSource
 
 # Fixed "today" so date behaviour is deterministic. A Thursday; the ECB
 # publishes on it.
@@ -48,7 +54,7 @@ def raw_response(body: str, status: int = 200) -> httpx.Response:
 
 
 class FakeUpstream:
-    """Stands in for api.frankfurter.dev. Counts calls, so caching is testable."""
+    """Stands in for api.frankfurter.dev at the socket. Counts calls."""
 
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
@@ -83,6 +89,24 @@ class FakeUpstream:
         return rates_response(rate_date, {request.url.params["symbols"]: 47.1234})
 
 
+class FakeRates:
+    """A `RateSource` under the test's control, with no HTTP underneath."""
+
+    def __init__(self, respond: Callable[[], Awaitable[Quote]] | None = None) -> None:
+        self.calls: list[tuple[str, str, date | None]] = []
+        self._respond = respond
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
+
+    async def quote(self, base: str, target: str, on: date | None) -> Quote:
+        self.calls.append((base, target, on))
+        if self._respond is None:
+            return Quote(rate=Decimal("47.1234"), rate_date=date(2026, 9, 2))
+        return await self._respond()
+
+
 class Clock:
     """A monotonic clock the tests advance by hand."""
 
@@ -99,6 +123,7 @@ class Clock:
 @dataclass
 class Harness:
     upstream: FakeUpstream
+    rates: RateSource
     settings: Settings
     clock: Clock
     service: FxService
@@ -109,6 +134,7 @@ def build_harness(
     responder: Responder | None = None,
     settings: Settings | None = None,
     today: date = TODAY,
+    rates: RateSource | None = None,
 ) -> Harness:
     upstream = FakeUpstream()
     if responder is not None:
@@ -117,14 +143,15 @@ def build_harness(
         upstream_base="https://upstream.test", latest_cache_ttl_seconds=600.0
     )
     clock = Clock()
-    service = FxService(
-        httpx.AsyncClient(transport=httpx.MockTransport(upstream.handle)),
-        settings,
-        today=lambda: today,
-        monotonic=clock,
-    )
+    if rates is None:
+        rates = FrankfurterRates(
+            httpx.AsyncClient(transport=httpx.MockTransport(upstream.handle)),
+            settings.upstream_base,
+            settings.upstream_timeout_seconds,
+        )
+    service = FxService(rates, settings, today=lambda: today, monotonic=clock)
     client = TestClient(create_app(settings=settings, service=service))
-    return Harness(upstream, settings, clock, service, client)
+    return Harness(upstream, rates, settings, clock, service, client)
 
 
 @pytest.fixture

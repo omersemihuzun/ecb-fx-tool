@@ -8,7 +8,6 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, AsyncIterator
 
-import httpx
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -19,6 +18,7 @@ from . import errors
 from .config import Settings
 from .errors import FxError
 from .fx import Conversion, FxService
+from .upstream import FrankfurterRates
 
 logger = logging.getLogger("fx")
 
@@ -94,18 +94,16 @@ def create_app(settings: Settings | None = None, service: FxService | None = Non
             yield
             return
 
-        # One client for the process, opened and closed with it. Creating it
-        # at import time binds it to whichever event loop happened to exist.
-        client = httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.upstream_timeout_seconds),
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
-            headers={"user-agent": "mangolab-fx-tool/1.0"},
-        )
-        app.state.service = FxService(client, settings)
+        # One rate source for the process, opened and closed with it. Building
+        # its client at import time would bind it to whichever event loop
+        # happened to exist then.
+        rates = FrankfurterRates.open(settings)
+        app.state.rates = rates
+        app.state.service = FxService(rates, settings)
         try:
             yield
         finally:
-            await client.aclose()
+            await rates.aclose()
 
     app = FastAPI(
         title="fx-tool",

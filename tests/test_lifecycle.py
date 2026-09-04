@@ -1,21 +1,18 @@
 """The parts that only run in production, and the branches nothing else reaches.
 
-The rest of the suite hands the app a service wired to a fake transport, which
-means the code that builds and closes the real one is never exercised by it.
-That code is exactly what REVIEW.md faults `tool.py` for, so it gets a test.
+The rest of the suite hands the app a service wired to a fake, which means the
+code that builds and closes the real rate source is never exercised by it. That
+code is exactly what REVIEW.md faults `tool.py` for, so it gets a test.
 """
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-import httpx
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -23,26 +20,29 @@ from app.config import ECB_TIMEZONE, ConfigError, Settings
 from app.errors import FxError
 from app.fx import FxService, ecb_today
 from app.main import create_app
-from conftest import TODAY, build_harness, rates_response
+from app.upstream import FrankfurterRates, Quote
+from conftest import FakeRates, build_harness, rates_response
 
 
-def test_the_app_opens_its_own_client_and_closes_it_on_shutdown():
+def test_the_app_opens_its_own_rate_source_and_closes_it_on_shutdown():
     app = create_app(settings=Settings(upstream_base="https://upstream.test"))
 
     with TestClient(app):
-        service = app.state.service
-        assert isinstance(service, FxService)
-        client = service._client
-        assert client.is_closed is False
+        rates = app.state.rates
+        assert isinstance(rates, FrankfurterRates)
+        assert isinstance(app.state.service, FxService)
+        assert rates.is_closed is False
 
-    assert client.is_closed
+    assert rates.is_closed
 
 
-def test_the_client_is_built_with_the_configured_timeout():
-    app = create_app(settings=Settings(upstream_base="https://x.test", upstream_timeout_seconds=1.5))
+def test_the_rate_source_is_built_with_the_configured_timeout():
+    settings = Settings(upstream_base="https://x.test", upstream_timeout_seconds=1.5)
 
-    with TestClient(app):
-        assert app.state.service._client.timeout.read == 1.5
+    with TestClient(create_app(settings=settings)) as _:
+        pass
+
+    assert FrankfurterRates.open(settings).timeout_seconds == 1.5
 
 
 def test_today_is_read_off_the_ecb_calendar_not_the_local_one():
@@ -76,7 +76,7 @@ def test_an_unexpected_http_exception_never_leaks_its_own_shape():
 
 async def test_a_non_finite_amount_is_refused_at_the_service_boundary(service: FxService):
     # FastAPI rejects "nan" before the service sees it. The service does not
-    # rely on that, because it is also called directly from these tests.
+    # rely on that, because it is also called directly.
     with pytest.raises(FxError) as caught:
         await service.convert(Decimal("NaN"), "EUR", "TRY", None)
 
@@ -95,7 +95,7 @@ async def test_a_rate_dated_before_the_ecb_series_is_rejected(service: FxService
 # --- configuration -----------------------------------------------------------
 
 
-def test_caching_can_be_turned_off_entirely(upstream):
+def test_caching_can_be_turned_off_entirely():
     harness = build_harness(
         settings=Settings(upstream_base="https://upstream.test", latest_cache_ttl_seconds=0.0)
     )
@@ -110,42 +110,25 @@ def test_a_non_numeric_duration_stops_the_process_at_startup():
         Settings.from_env({"FX_UPSTREAM_TIMEOUT_SECONDS": "soon"})
 
 
-# --- single flight, when the shared call goes wrong --------------------------
+# --- the service asks its source once, whatever the callers do ---------------
 
 
-async def test_concurrent_callers_all_see_the_same_failure(service: FxService, upstream):
-    upstream.always(httpx.Response(503))
-
-    results = await asyncio.gather(
-        *(service.convert(Decimal(1), "EUR", "TRY", None) for _ in range(5)),
-        return_exceptions=True,
-    )
-
-    assert upstream.call_count == 1
-    assert {type(r) for r in results} == {FxError}
-    assert {r.code for r in results} == {"upstream_unavailable"}
-
-
-async def test_one_caller_giving_up_does_not_take_the_others_with_it(service: FxService, upstream):
-    started = asyncio.Event()
+async def test_five_simultaneous_callers_cost_the_source_one_quote():
     release = asyncio.Event()
 
-    async def slow(request: httpx.Request) -> httpx.Response:
-        upstream.requests.append(request)
-        started.set()
+    async def slow() -> Quote:
         await release.wait()
-        return rates_response("2026-09-02", {"TRY": 47.1234})
+        return Quote(rate=Decimal("47.1234"), rate_date=date(2026, 9, 2))
 
-    service._client = httpx.AsyncClient(transport=httpx.MockTransport(slow))
+    rates = FakeRates(slow)
+    harness = build_harness(rates=rates)
 
-    first = asyncio.create_task(service.convert(Decimal(1), "EUR", "TRY", None))
-    second = asyncio.create_task(service.convert(Decimal(1), "EUR", "TRY", None))
-    await started.wait()
-
-    # The caller that opened the upstream request disconnects.
-    first.cancel()
+    waiting = asyncio.gather(
+        *(harness.service.convert(Decimal(1), "EUR", "TRY", None) for _ in range(5))
+    )
+    await asyncio.sleep(0)
     release.set()
-    conversion = await second
+    results = await waiting
 
-    assert conversion.rate == Decimal("47.1234")
-    assert upstream.call_count == 1
+    assert rates.call_count == 1
+    assert {conversion.rate for conversion in results} == {Decimal("47.1234")}
