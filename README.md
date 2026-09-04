@@ -84,7 +84,7 @@ job. No test touches a private attribute now.
 ## Testing
 
 ```bash
-./test.sh                # 108 tests, no network touched
+./test.sh                # 121 tests, no network touched
 ./test.sh -m live        # 5 more, against the real frankfurter.dev
 ```
 
@@ -100,6 +100,11 @@ cases — that a 200 always carries a complete conversion whose result is exactl
 the amount times the rate, that `rate_date` is never later than the day asked
 about, and that an identical pair never reaches the network. That file is what
 found the rounding limit described at the end of this README.
+
+`tests/test_review_evidence.py` is Part B rather than Part A: it asserts every
+finding in REVIEW.md against `tool.py` over the same kind of fake. A review is a
+set of claims about somebody else's code, and claims rot. If one stops
+reproducing, this suite goes red and REVIEW.md is wrong.
 
 The `live` tests are excluded by default. They exist to re-check the assumptions
 the offline fake is built on: that a closed day comes back dated to the previous

@@ -7,6 +7,11 @@ behaviour the fake reproduces was checked against the live service first: a
 closed day returns the previous publication date, an unknown currency returns
 404, and an identical pair returns 422.
 
+Those reproductions are not narration. They are `tests/test_review_evidence.py`
+and they run in `./test.sh`, so if a finding here ever stops reproducing, the
+suite goes red and this document is wrong. Run it yourself to see each defect
+happen.
+
 ## 1. Every failure is a 200 with a rate of zero
 
 `convert` catches everything and returns a success-shaped body with
@@ -133,3 +138,28 @@ read yet. Finding 1 changes only what happens on a path that is already broken.
 - **`/health` answering `{"ok": true}` without checking upstream.** Correct for
   a liveness probe. Wiring liveness to a third party turns their outage into
   our restart loop.
+
+## Where each of these is prevented in Part A
+
+The service in `app/` is a separate implementation, not a repaired `tool.py`.
+But these defects are why several of its tests exist, and each one fails if the
+corresponding mistake is reintroduced.
+
+| Defect | The test that would catch it coming back |
+|---|---|
+| 1. A failure answered as a 200 with zeros | `test_a_response_is_either_a_whole_conversion_or_no_conversion` — a property over generated requests and upstream behaviour, asserting a 200 carries a complete conversion or the body is exactly `{error, message}` |
+| 2. Documented parameters that never bind | `test_returns_the_documented_shape` calls with `from` and `date` and compares the entire body |
+| 3. A cache key without the date | `test_a_rate_fetched_for_one_day_is_never_served_for_another` |
+| 3. A cache with no expiry or bound | `test_an_entry_expires_when_its_ttl_runs_out`, `test_the_least_recently_used_entry_is_evicted_first` |
+| 4. A rate rounded before it is used | `test_the_published_rate_is_not_rounded`, at a rate below 1 where the damage shows |
+| 5. `rate_date` taken from the question | `test_a_closed_day_reports_the_date_the_rate_belongs_to`, and the property `test_a_rate_is_never_reported_under_a_day_it_was_not_published_for` |
+| 6. An unvalidated amount | `test_amounts_that_cannot_produce_a_true_answer_are_refused`, parametrised over `nan`, `inf`, negatives and junk |
+| 6. Two error shapes | `test_missing_parameters_use_the_same_error_shape`, plus `tests/test_error_catalogue.py` binding every code to the README |
+| 7. A hardcoded upstream | `tests/test_config.py` proves every knob is read from the environment |
+| 7. A client never closed | `test_the_app_opens_its_own_rate_source_and_closes_it_on_shutdown` |
+
+One defect in `tool.py` has no counterpart above, because reviewing it changed
+the design rather than adding a test. The weekend fallback that re-queries
+`/latest` is what made me separate "the newest published rate" from "the rate
+for today" into two different questions, with two different cache keys and two
+different expiry rules.
