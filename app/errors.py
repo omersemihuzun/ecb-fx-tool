@@ -31,6 +31,7 @@ CATALOGUE: dict[str, int] = {
     "unsupported_currency": 400,
     "future_date": 400,
     "date_out_of_range": 400,
+    "no_rate_available": 404,
     "not_found": 404,
     "method_not_allowed": 405,
     "not_representable": 422,
@@ -105,6 +106,14 @@ def not_representable(field: str, value: Decimal) -> FxError:
         "not_representable",
         f"The exact value of '{field}' ({value:f}) cannot be carried as a JSON number. "
         f"Convert a smaller amount.",
+    )
+
+
+def no_rate_available(base: str, target: str, asked: date, newest: date, days: int) -> FxError:
+    return FxError(
+        "no_rate_available",
+        f"No {base}/{target} rate published within {days} days of {asked.isoformat()}; "
+        f"the newest is from {newest.isoformat()}.",
     )
 
 

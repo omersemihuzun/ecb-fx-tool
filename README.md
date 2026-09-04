@@ -84,7 +84,7 @@ job. No test touches a private attribute now.
 ## Testing
 
 ```bash
-./test.sh                # 90 tests, no network touched
+./test.sh                # 108 tests, no network touched
 ./test.sh -m live        # 5 more, against the real frankfurter.dev
 ```
 
@@ -118,7 +118,9 @@ target here; it is how the dead error code mentioned below was found.
 |---|---|---|
 | `FX_UPSTREAM_BASE` | `https://api.frankfurter.dev` | Rate source. `/v1/...` is appended. |
 | `PORT` | `8080` | Listen port. |
-| `FX_UPSTREAM_TIMEOUT_SECONDS` | `5` | Per-request upstream timeout. |
+| `FX_UPSTREAM_TIMEOUT_SECONDS` | `5` | Per-attempt upstream timeout. |
+| `FX_UPSTREAM_ATTEMPTS` | `2` | Attempts per upstream call. Only timeouts and 5xx are retried. |
+| `FX_MAX_STALENESS_DAYS` | `7` | How far a rate may sit behind the date asked about. |
 | `FX_CACHE_TTL_SECONDS` | `600` | How long a rate that can still change is reused. |
 | `FX_CACHE_MAX_ENTRIES` | `4096` | Cache bound. |
 | `FX_MAX_AMOUNT` | `1000000000000` | Largest accepted `amount`. |
@@ -154,6 +156,7 @@ is the same kind of defect as returning one it does not document.
 | `unsupported_currency` | 400 | The ECB series does not carry the pair. |
 | `future_date` | 400 | Later than today in Frankfurt. |
 | `date_out_of_range` | 400 | Before 1999-01-04, where the series starts. |
+| `no_rate_available` | 404 | The newest rate is too far behind the date asked about. |
 | `not_found` | 404 | No endpoint at that path. |
 | `method_not_allowed` | 405 | That method is not allowed on that path. |
 | `not_representable` | 422 | The exact result cannot be carried as a JSON number. |
@@ -191,10 +194,21 @@ Sending the pair upstream would be worse than useless — frankfurter.dev return
 **A currency neither side carries.** `unsupported_currency`, 400. It is the
 caller's request that is wrong, not the rate source.
 
+**The rate is much older than the date asked about.** Refused with
+`no_rate_available`. Carrying a rate forward over a weekend is the point; doing
+it over four months is not. The longest real gap in the ECB series since 2019 is
+five days, at Easter, so `FX_MAX_STALENESS_DAYS` of seven never touches a
+legitimate closure. Past it, the feed has stopped or the pair is no longer
+published, and a rate from months ago is not an answer to today's question
+however honestly `rate_date` labels it.
+
 **The upstream is down, slow, or answering nonsense.** `upstream_unavailable`,
-`upstream_timeout`, `upstream_invalid_response`. A missing `rates` object, an
-unparseable date, a non-numeric or non-positive rate, and a rate dated *after*
-the day asked about are all treated as unusable rather than parsed optimistically.
+`upstream_timeout`, `upstream_invalid_response`. A timeout or a 5xx is retried
+once, because a GET is idempotent and one more attempt costs the caller latency
+and nothing else; a 4xx never is, because the request is wrong and sending it
+again will not fix it. A missing `rates` object, an unparseable date, a
+non-numeric or non-positive rate, and a rate dated *after* the day asked about
+are all treated as unusable rather than parsed optimistically.
 
 **A bad amount.** Rejected: non-numeric, negative, `nan`, `inf`, or above
 `FX_MAX_AMOUNT`. Zero is accepted and converts to zero. Negatives are rejected

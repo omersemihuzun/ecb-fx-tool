@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -85,7 +85,7 @@ class FxService:
             )
 
         quote = await self._quote(base, target, asked_date, today)
-        self._check_quote_date(quote, effective_date)
+        self._check_quote(quote, base, target, effective_date)
         return self._conversion(
             amount, base, target, quote.rate, quote.rate_date, effective_date, ECB_SOURCE
         )
@@ -120,14 +120,20 @@ class FxService:
             raise errors.future_date(effective, today)
         return effective
 
-    @staticmethod
-    def _check_quote_date(quote: Quote, asked_date: date) -> None:
-        """The one thing a rate source is not allowed to get wrong.
+    def _check_quote(self, quote: Quote, base: str, target: str, asked_date: date) -> None:
+        """Whether a rate that parsed correctly is an answer to the question.
 
         An earlier date than the one asked about is normal: the ECB does not
         publish at weekends, and the rate is carried forward. A later one would
         mean labelling a rate with a day it does not belong to, which is the
-        failure this whole service is built to avoid.
+        failure this whole service exists to avoid.
+
+        Carried forward has a limit. The longest real gap in the series since
+        2019 is five days, at Easter, so a gap past `max_staleness_days` is not
+        a holiday; it means the feed has stopped or the pair is no longer
+        published. A rate from months ago is not an answer to today's question,
+        however honestly `rate_date` labels it, and a caller reading `result`
+        would never know.
         """
         if quote.rate_date > asked_date:
             raise errors.upstream_invalid_response(
@@ -138,6 +144,9 @@ class FxService:
             raise errors.upstream_invalid_response(
                 f"a date outside the ECB series ({quote.rate_date.isoformat()})."
             )
+        allowed = self._settings.max_staleness_days
+        if asked_date - quote.rate_date > timedelta(days=allowed):
+            raise errors.no_rate_available(base, target, asked_date, quote.rate_date, allowed)
 
     # -- fetching ---------------------------------------------------------
 
