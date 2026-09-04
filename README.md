@@ -57,7 +57,7 @@ main.py       HTTP. Parse in, one shape out. Holds no rules.
 `fx.py` is the file worth reading. It holds every decision about whether an
 answer can be trusted — what a usable amount is, which dates are answerable,
 what an identical pair means, and the one check a rate source is not allowed to
-fail — and it holds nothing else. That is why it is eighty statements, and why
+fail — and it holds nothing else. That is why it is eighty-two statements, and why
 its tests need no server, no socket and no clock.
 
 Its two dependencies exist because they are the two things that would otherwise

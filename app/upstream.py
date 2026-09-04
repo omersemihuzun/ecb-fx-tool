@@ -133,8 +133,11 @@ class FrankfurterRates:
                 )
             return response
 
-        assert transient is not None  # the loop runs at least once
-        raise transient
+        # `_attempts` is at least 1, so the loop body ran and set this. The
+        # fallback is here rather than an assert because assertions are stripped
+        # under `python -O`, and a stripped one would turn a clean upstream
+        # error into a 500.
+        raise transient or errors.upstream_unavailable("no attempt was made")
 
     # -- parsing ----------------------------------------------------------
 
