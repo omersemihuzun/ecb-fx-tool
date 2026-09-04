@@ -107,6 +107,10 @@ class FakeRates:
         return await self._respond()
 
 
+async def no_wait(_seconds: float) -> None:
+    """Retry backoff, without the wait."""
+
+
 class Clock:
     """A monotonic clock the tests advance by hand."""
 
@@ -148,6 +152,8 @@ def build_harness(
             httpx.AsyncClient(transport=httpx.MockTransport(upstream.handle)),
             settings.upstream_base,
             settings.upstream_timeout_seconds,
+            settings.upstream_attempts,
+            sleep=no_wait,
         )
     service = FxService(rates, settings, today=lambda: today, monotonic=clock)
     client = TestClient(create_app(settings=settings, service=service))
